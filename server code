@@ -1,0 +1,105 @@
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from typing import Optional, List
+
+app = FastAPI(title="Wi-Fi Band Analyzer")
+
+
+# Stores latest data received from each client
+devices = {}
+
+
+class WifiData(BaseModel):
+
+    # Device identification
+    device_name: str
+    adapter_name: Optional[str] = None
+
+    # Device capability
+    supported_radio_types: List[str] = []
+    supported_bands: List[str] = []
+    max_wifi_standard: Optional[str] = None
+
+    # Current Wi-Fi connection
+    ssid: Optional[str] = None
+    wifi_standard: Optional[str] = None
+    active_band: Optional[str] = None
+    channel: Optional[int] = None
+
+    # Signal information
+    signal_percent: Optional[int] = None
+    rssi_dbm: Optional[float] = None
+
+    # Estimated because Windows does not provide noise floor
+    snr_db_est: Optional[float] = None
+
+    # Link rates
+    rx_rate_mbps: Optional[float] = None
+    tx_rate_mbps: Optional[float] = None
+
+    # Performance metrics - we will add collection later
+    latency_ms: Optional[float] = None
+    packet_loss_pct: Optional[float] = None
+
+
+@app.get("/")
+def home():
+
+    return {
+        "status": "Wi-Fi Band Analyzer Server is running"
+    }
+
+
+@app.post("/telemetry")
+def receive_telemetry(data: WifiData, request: Request):
+
+    client_ip = request.client.host
+
+    device_data = data.model_dump()
+
+    # Server automatically determines source IP
+    device_data["client_ip"] = client_ip
+
+    # Store data using device name
+    devices[data.device_name] = device_data
+
+    print("\n================================")
+    print("Wi-Fi DATA RECEIVED")
+    print("================================")
+
+    print("Device:", data.device_name)
+    print("Client IP:", client_ip)
+
+    print("\nDEVICE CAPABILITY")
+    print("Adapter:", data.adapter_name)
+    print("Supported Radios:", data.supported_radio_types)
+    print("Supported Bands:", data.supported_bands)
+    print("Maximum Standard:", data.max_wifi_standard)
+
+    print("\nCURRENT CONNECTION")
+    print("SSID:", data.ssid)
+    print("Standard:", data.wifi_standard)
+    print("Band:", data.active_band)
+    print("Channel:", data.channel)
+
+    print("\nSIGNAL / PERFORMANCE")
+    print("Signal:", data.signal_percent, "%")
+    print("RSSI:", data.rssi_dbm, "dBm")
+    print("Estimated SNR:", data.snr_db_est, "dB")
+    print("RX Rate:", data.rx_rate_mbps, "Mbps")
+    print("TX Rate:", data.tx_rate_mbps, "Mbps")
+
+    print("================================\n")
+
+    return {
+        "status": "received",
+        "device": data.device_name,
+        "client_ip": client_ip
+    }
+
+
+@app.get("/devices")
+def get_devices():
+
+    return devices
+
