@@ -1,0 +1,418 @@
+import subprocess
+import socket
+import re
+import requests
+
+
+# ==========================================================
+# SERVER
+# ==========================================================
+
+SERVER_URL = "http://172.16.45.104:8000"
+
+
+# ==========================================================
+# RUN WINDOWS COMMAND
+# ==========================================================
+
+def run_command(command):
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        errors="ignore"
+    )
+
+    return result.stdout
+
+
+# ==========================================================
+# GET A FIELD FROM NETSH OUTPUT
+# ==========================================================
+
+def get_value(output, field):
+
+    pattern = rf"^\s*{re.escape(field)}\s*:\s*(.+)$"
+
+    match = re.search(
+        pattern,
+        output,
+        re.MULTILINE | re.IGNORECASE
+    )
+
+    if match:
+        return match.group(1).strip()
+
+    return None
+
+
+# ==========================================================
+# DETERMINE MAXIMUM WI-FI STANDARD
+# ==========================================================
+
+def determine_max_wifi_standard(radio_types):
+
+    if "802.11be" in radio_types:
+        return "Wi-Fi 7"
+
+    if "802.11ax" in radio_types:
+        return "Wi-Fi 6"
+
+    if "802.11ac" in radio_types:
+        return "Wi-Fi 5"
+
+    if "802.11n" in radio_types:
+        return "Wi-Fi 4"
+
+    return "Legacy Wi-Fi"
+
+
+# ==========================================================
+# COLLECT DEVICE CAPABILITY
+# ==========================================================
+
+def collect_capabilities():
+
+    output = run_command(
+        ["netsh", "wlan", "show", "drivers"]
+    )
+
+    # Adapter name
+    adapter_name = get_value(
+        output,
+        "Driver"
+    )
+
+    # Radio types
+    radio_text = get_value(
+        output,
+        "Radio types supported"
+    )
+
+    if radio_text:
+
+        # Remove duplicates while preserving order
+        radio_types = list(
+            dict.fromkeys(radio_text.split())
+        )
+
+    else:
+
+        radio_types = []
+
+
+    # ------------------------------------------------------
+    # Supported bands
+    # ------------------------------------------------------
+
+    supported_bands = []
+
+    band_section = re.search(
+        r"Number of supported bands\s*:\s*\d+\s*(.*?)(?:Wireless Display Supported|$)",
+        output,
+        re.DOTALL | re.IGNORECASE
+    )
+
+    if band_section:
+
+        band_text = band_section.group(1)
+
+        if re.search(r"2\.4\s*GHz", band_text, re.IGNORECASE):
+            supported_bands.append("2.4 GHz")
+
+        if re.search(r"5\s*GHz", band_text, re.IGNORECASE):
+            supported_bands.append("5 GHz")
+
+        if re.search(r"6\s*GHz", band_text, re.IGNORECASE):
+            supported_bands.append("6 GHz")
+
+
+    max_standard = determine_max_wifi_standard(
+        radio_types
+    )
+
+
+    return {
+        "adapter_name": adapter_name,
+        "supported_radio_types": radio_types,
+        "supported_bands": supported_bands,
+        "max_wifi_standard": max_standard
+    }
+
+
+# ==========================================================
+# COLLECT CURRENT CONNECTION
+# ==========================================================
+
+def collect_current_connection():
+
+    output = run_command(
+        ["netsh", "wlan", "show", "interfaces"]
+    )
+
+    ssid = get_value(
+        output,
+        "SSID"
+    )
+
+    wifi_standard = get_value(
+        output,
+        "Radio type"
+    )
+
+    active_band = get_value(
+        output,
+        "Band"
+    )
+
+    channel_text = get_value(
+        output,
+        "Channel"
+    )
+
+    signal_text = get_value(
+        output,
+        "Signal"
+    )
+
+    rssi_text = get_value(
+        output,
+        "Rssi"
+    )
+
+    rx_text = get_value(
+        output,
+        "Receive rate (Mbps)"
+    )
+
+    tx_text = get_value(
+        output,
+        "Transmit rate (Mbps)"
+    )
+
+
+    # ------------------------------------------------------
+    # Convert values
+    # ------------------------------------------------------
+
+    try:
+        channel = int(channel_text)
+    except:
+        channel = None
+
+
+    try:
+        signal_percent = int(
+            signal_text.replace("%", "")
+        )
+    except:
+        signal_percent = None
+
+
+    try:
+        rssi_dbm = float(rssi_text)
+    except:
+        rssi_dbm = None
+
+
+    try:
+        rx_rate = float(rx_text)
+    except:
+        rx_rate = None
+
+
+    try:
+        tx_rate = float(tx_text)
+    except:
+        tx_rate = None
+
+
+    # ------------------------------------------------------
+    # ESTIMATED SNR
+    # ------------------------------------------------------
+    #
+    # RSSI comes directly from Windows on supported clients.
+    #
+    # Noise floor is NOT available from netsh.
+    # Therefore SNR remains an estimate.
+    # ------------------------------------------------------
+
+    ASSUMED_NOISE_FLOOR_DBM = -95
+
+    if rssi_dbm is not None:
+
+        snr_est = round(
+            rssi_dbm - ASSUMED_NOISE_FLOOR_DBM,
+            1
+        )
+
+    else:
+
+        snr_est = None
+
+
+    return {
+
+        "ssid": ssid,
+
+        "wifi_standard": wifi_standard,
+
+        "active_band": active_band,
+
+        "channel": channel,
+
+        "signal_percent": signal_percent,
+
+        "rssi_dbm": rssi_dbm,
+
+        "snr_db_est": snr_est,
+
+        "rx_rate_mbps": rx_rate,
+
+        "tx_rate_mbps": tx_rate
+    }
+
+
+# ==========================================================
+# BUILD COMPLETE DEVICE RECORD
+# ==========================================================
+
+def collect_all_data():
+
+    print("Reading device capability...")
+
+    capability = collect_capabilities()
+
+
+    print("Reading current Wi-Fi connection...")
+
+    connection = collect_current_connection()
+
+
+    data = {
+
+        "device_name": socket.gethostname(),
+
+        # Device capability
+        **capability,
+
+        # Current connection
+        **connection,
+
+        # To be implemented later
+        "latency_ms": None,
+
+        "packet_loss_pct": None
+    }
+
+
+    return data
+
+
+# ==========================================================
+# SEND TO SERVER
+# ==========================================================
+
+def send_to_server(data):
+
+    print("\nSending data to server...")
+
+    try:
+
+        response = requests.post(
+            SERVER_URL + "/telemetry",
+            json=data,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+
+        print("\n================================")
+        print("SUCCESS")
+        print("================================")
+
+        print(
+            "Device:",
+            data["device_name"]
+        )
+
+        print(
+            "Adapter:",
+            data["adapter_name"]
+        )
+
+        print(
+            "Supported Bands:",
+            data["supported_bands"]
+        )
+
+        print(
+            "Maximum Wi-Fi:",
+            data["max_wifi_standard"]
+        )
+
+        print(
+            "Current Standard:",
+            data["wifi_standard"]
+        )
+
+        print(
+            "Current Band:",
+            data["active_band"]
+        )
+
+        print(
+            "RSSI:",
+            data["rssi_dbm"],
+            "dBm"
+        )
+
+        print(
+            "Estimated SNR:",
+            data["snr_db_est"],
+            "dB"
+        )
+
+        print(
+            "RX Rate:",
+            data["rx_rate_mbps"],
+            "Mbps"
+        )
+
+        print(
+            "TX Rate:",
+            data["tx_rate_mbps"],
+            "Mbps"
+        )
+
+        print("\nServer Response:")
+        print(response.json())
+
+        print("================================")
+
+
+    except requests.RequestException as error:
+
+        print("\nFAILED TO SEND DATA")
+
+        print(error)
+
+
+# ==========================================================
+# MAIN
+# ==========================================================
+
+if __name__ == "__main__":
+
+    print("\n================================")
+    print("Wi-Fi Band Analyzer Client")
+    print("================================")
+
+    data = collect_all_data()
+
+    send_to_server(data)
+
+    print("\nCollection complete.")
+    print("Program finished.")
