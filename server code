@@ -1,46 +1,93 @@
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
-app = FastAPI(title="Wi-Fi Band Analyzer")
+
+app = FastAPI(
+    title="Wi-Fi Band Analyzer"
+)
 
 
-# Stores latest data received from each client
+# ============================================================
+# STORE ONE LATEST SNAPSHOT PER CLIENT
+# ============================================================
+
 devices = {}
 
 
+# ============================================================
+# DATA EXPECTED FROM CLIENT
+# ============================================================
+
 class WifiData(BaseModel):
 
+    # -------------------------
     # Device identification
+    # -------------------------
+
     device_name: str
     adapter_name: Optional[str] = None
 
+
+    # -------------------------
     # Device capability
-    supported_radio_types: List[str] = []
-    supported_bands: List[str] = []
+    # -------------------------
+
+    supported_radio_types: List[str] = Field(default_factory=list)
+
+    supported_bands: List[str] = Field(default_factory=list)
+
     max_wifi_standard: Optional[str] = None
 
-    # Current Wi-Fi connection
+
+    # -------------------------
+    # Current connection
+    # -------------------------
+
     ssid: Optional[str] = None
+
     wifi_standard: Optional[str] = None
+
     active_band: Optional[str] = None
+
     channel: Optional[int] = None
 
+
+    # -------------------------
     # Signal information
+    # -------------------------
+
     signal_percent: Optional[int] = None
+
+    # Actual RSSI when Windows reports it
     rssi_dbm: Optional[float] = None
 
-    # Estimated because Windows does not provide noise floor
+    # Estimated because noise floor is assumed
     snr_db_est: Optional[float] = None
 
-    # Link rates
+
+    # -------------------------
+    # Link rate
+    # -------------------------
+
     rx_rate_mbps: Optional[float] = None
+
     tx_rate_mbps: Optional[float] = None
 
-    # Performance metrics - we will add collection later
+
+    # -------------------------
+    # Network performance
+    # We will populate these later
+    # -------------------------
+
     latency_ms: Optional[float] = None
+
     packet_loss_pct: Optional[float] = None
 
+
+# ============================================================
+# SERVER HEALTH CHECK
+# ============================================================
 
 @app.get("/")
 def home():
@@ -50,56 +97,154 @@ def home():
     }
 
 
-@app.post("/telemetry")
-def receive_telemetry(data: WifiData, request: Request):
+# ============================================================
+# RECEIVE ONE CLIENT SNAPSHOT
+# ============================================================
 
+@app.post("/telemetry")
+def receive_telemetry(
+    data: WifiData,
+    request: Request
+):
+
+    # Get client's IP automatically
     client_ip = request.client.host
 
+    # Convert incoming Pydantic object to dictionary
     device_data = data.model_dump()
 
-    # Server automatically determines source IP
+    # Add IP observed by server
     device_data["client_ip"] = client_ip
 
-    # Store data using device name
+
+    # Store/update this client's latest snapshot
     devices[data.device_name] = device_data
 
-    print("\n================================")
-    print("Wi-Fi DATA RECEIVED")
-    print("================================")
 
-    print("Device:", data.device_name)
-    print("Client IP:", client_ip)
+    # Display received information in server terminal
+
+    print("\n======================================")
+    print("       WI-FI CLIENT RECEIVED")
+    print("======================================")
+
+    print("\nDEVICE")
+    print("Name:", data.device_name)
+    print("IP:", client_ip)
+    print("Adapter:", data.adapter_name)
+
 
     print("\nDEVICE CAPABILITY")
-    print("Adapter:", data.adapter_name)
-    print("Supported Radios:", data.supported_radio_types)
-    print("Supported Bands:", data.supported_bands)
-    print("Maximum Standard:", data.max_wifi_standard)
+
+    print(
+        "Supported Radios:",
+        data.supported_radio_types
+    )
+
+    print(
+        "Supported Bands:",
+        data.supported_bands
+    )
+
+    print(
+        "Maximum Wi-Fi Standard:",
+        data.max_wifi_standard
+    )
+
 
     print("\nCURRENT CONNECTION")
-    print("SSID:", data.ssid)
-    print("Standard:", data.wifi_standard)
-    print("Band:", data.active_band)
-    print("Channel:", data.channel)
 
-    print("\nSIGNAL / PERFORMANCE")
-    print("Signal:", data.signal_percent, "%")
-    print("RSSI:", data.rssi_dbm, "dBm")
-    print("Estimated SNR:", data.snr_db_est, "dB")
-    print("RX Rate:", data.rx_rate_mbps, "Mbps")
-    print("TX Rate:", data.tx_rate_mbps, "Mbps")
+    print(
+        "SSID:",
+        data.ssid
+    )
 
-    print("================================\n")
+    print(
+        "Current Standard:",
+        data.wifi_standard
+    )
+
+    print(
+        "Active Band:",
+        data.active_band
+    )
+
+    print(
+        "Channel:",
+        data.channel
+    )
+
+
+    print("\nSIGNAL")
+
+    print(
+        "Signal:",
+        data.signal_percent,
+        "%"
+    )
+
+    print(
+        "RSSI:",
+        data.rssi_dbm,
+        "dBm"
+    )
+
+    print(
+        "Estimated SNR:",
+        data.snr_db_est,
+        "dB"
+    )
+
+
+    print("\nLINK")
+
+    print(
+        "RX Rate:",
+        data.rx_rate_mbps,
+        "Mbps"
+    )
+
+    print(
+        "TX Rate:",
+        data.tx_rate_mbps,
+        "Mbps"
+    )
+
+
+    print("\nPERFORMANCE")
+
+    print(
+        "Latency:",
+        data.latency_ms,
+        "ms"
+    )
+
+    print(
+        "Packet Loss:",
+        data.packet_loss_pct,
+        "%"
+    )
+
+
+    print("======================================\n")
+
 
     return {
+
         "status": "received",
+
+        "message": "Wi-Fi snapshot stored successfully",
+
         "device": data.device_name,
+
         "client_ip": client_ip
     }
 
+
+# ============================================================
+# VIEW ALL CLIENT SNAPSHOTS
+# ============================================================
 
 @app.get("/devices")
 def get_devices():
 
     return devices
-
