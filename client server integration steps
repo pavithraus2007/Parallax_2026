@@ -4,9 +4,11 @@ create a folder in vs code
 http://172.16.45.104:8000/docs run this in chrome an interface will be shown to u this isn't an imp step servers ip 
 pip install python
 python -m pip install requests
-netsh wlan show interfaces run in terminal { to showcase windows telimentries}
-
+"netsh wlan show interfaces" run in terminal { to showcase windows telimentries}
+// 
 then  run 
 when client runs the code  the server should not kill the pgm(fastapi server)
 
-then u will get ur details every 5 seconds that will be the output of our system and the input of the server 
+[11:37 pm, 17/08/2026] Pavithra Umashankar: python -m pip install requests
+[11:37 pm, 17/08/2026] Pavithra Umashankar: netsh wlan show interfaces
+
