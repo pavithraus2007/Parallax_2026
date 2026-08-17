@@ -1,0 +1,946 @@
+import subprocess
+import socket
+import re
+import requests
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+# IP ADDRESS OF YOUR SERVER LAPTOP
+# Change this only if the server laptop's IPv4 address changes.
+SERVER_URL = "http://172.16.45.104:8000"
+
+# Windows normally does not expose the actual Wi-Fi noise floor.
+# We use -95 dBm only to calculate an ESTIMATED SNR.
+ASSUMED_NOISE_FLOOR_DBM = -95
+
+
+# ============================================================
+# RUN WINDOWS COMMAND
+# ============================================================
+
+def run_command(command):
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        errors="ignore"
+    )
+
+    return result.stdout
+
+
+# ============================================================
+# EXTRACT VALUE FROM NETSH OUTPUT
+# ============================================================
+
+def get_value(output, field):
+
+    pattern = rf"^\s*{re.escape(field)}\s*:\s*(.+)$"
+
+    match = re.search(
+        pattern,
+        output,
+        re.MULTILINE | re.IGNORECASE
+    )
+
+    if match:
+        return match.group(1).strip()
+
+    return None
+
+
+# ============================================================
+# DETERMINE MAXIMUM WI-FI STANDARD
+# ============================================================
+
+def determine_max_wifi_standard(radio_types):
+
+    radios = " ".join(radio_types).lower()
+
+    if "802.11be" in radios:
+        return "Wi-Fi 7"
+
+    if "802.11ax" in radios:
+        return "Wi-Fi 6"
+
+    if "802.11ac" in radios:
+        return "Wi-Fi 5"
+
+    if "802.11n" in radios:
+        return "Wi-Fi 4"
+
+    return "Legacy Wi-Fi"
+
+
+# ============================================================
+# COLLECT DEVICE WI-FI CAPABILITY
+# ============================================================
+
+def collect_capability():
+
+    output = run_command(
+        ["netsh", "wlan", "show", "drivers"]
+    )
+
+    # --------------------------------------------------------
+    # Wi-Fi adapter
+    # --------------------------------------------------------
+
+    adapter_name = get_value(
+        output,
+        "Driver"
+    )
+
+    # --------------------------------------------------------
+    # Supported radio types
+    # --------------------------------------------------------
+
+    radio_text = get_value(
+        output,
+        "Radio types supported"
+    )
+
+    if radio_text:
+
+        radio_types = list(
+            dict.fromkeys(
+                radio_text.split()
+            )
+        )
+
+    else:
+
+        radio_types = []
+
+
+    # --------------------------------------------------------
+    # Supported bands
+    # --------------------------------------------------------
+
+    supported_bands = []
+
+
+    # Modern Windows versions may show:
+    #
+    # Number of supported bands : 2
+    #     2.4 GHz
+    #     5 GHz
+
+    band_section = re.search(
+        r"Number of supported bands\s*:\s*\d+\s*(.*?)"
+        r"(?:Wireless Display Supported|$)",
+        output,
+        re.DOTALL | re.IGNORECASE
+    )
+
+
+    if band_section:
+
+        band_text = band_section.group(1)
+
+
+        if re.search(
+            r"2\.4\s*GHz",
+            band_text,
+            re.IGNORECASE
+        ):
+
+            supported_bands.append(
+                "2.4 GHz"
+            )
+
+
+        if re.search(
+            r"5\s*GHz",
+            band_text,
+            re.IGNORECASE
+        ):
+
+            supported_bands.append(
+                "5 GHz"
+            )
+
+
+        if re.search(
+            r"6\s*GHz",
+            band_text,
+            re.IGNORECASE
+        ):
+
+            supported_bands.append(
+                "6 GHz"
+            )
+
+
+    # --------------------------------------------------------
+    # Fallback for Windows versions that don't explicitly
+    # display "Number of supported bands"
+    # --------------------------------------------------------
+
+    if not supported_bands:
+
+        radios = " ".join(
+            radio_types
+        ).lower()
+
+
+        # 2.4 GHz capability
+
+        if any(
+            x in radios
+            for x in [
+                "802.11b",
+                "802.11g",
+                "802.11n",
+                "802.11ax",
+                "802.11be"
+            ]
+        ):
+
+            supported_bands.append(
+                "2.4 GHz"
+            )
+
+
+        # 5 GHz capability
+
+        if any(
+            x in radios
+            for x in [
+                "802.11a",
+                "802.11ac",
+                "802.11ax",
+                "802.11be"
+            ]
+        ):
+
+            supported_bands.append(
+                "5 GHz"
+            )
+
+
+        # IMPORTANT:
+        # We do NOT automatically infer 6 GHz from 802.11ax.
+        #
+        # Wi-Fi 6 = 2.4/5 GHz
+        # Wi-Fi 6E = adds 6 GHz
+
+
+    max_wifi_standard = (
+        determine_max_wifi_standard(
+            radio_types
+        )
+    )
+
+
+    return {
+
+        "adapter_name":
+            adapter_name,
+
+        "supported_radio_types":
+            radio_types,
+
+        "supported_bands":
+            supported_bands,
+
+        "max_wifi_standard":
+            max_wifi_standard
+    }
+
+
+# ============================================================
+# COLLECT CURRENT WI-FI CONNECTION
+# ============================================================
+
+def collect_current_wifi():
+
+    output = run_command(
+        ["netsh", "wlan", "show", "interfaces"]
+    )
+
+
+    # --------------------------------------------------------
+    # Current SSID
+    # --------------------------------------------------------
+
+    ssid = get_value(
+        output,
+        "SSID"
+    )
+
+
+    # --------------------------------------------------------
+    # Current Wi-Fi standard
+    # --------------------------------------------------------
+
+    wifi_standard = get_value(
+        output,
+        "Radio type"
+    )
+
+
+    # --------------------------------------------------------
+    # Active band
+    # --------------------------------------------------------
+
+    active_band = get_value(
+        output,
+        "Band"
+    )
+
+
+    # --------------------------------------------------------
+    # Channel
+    # --------------------------------------------------------
+
+    channel_text = get_value(
+        output,
+        "Channel"
+    )
+
+
+    try:
+
+        channel = int(
+            channel_text
+        )
+
+    except (TypeError, ValueError):
+
+        channel = None
+
+
+    # --------------------------------------------------------
+    # Signal %
+    # --------------------------------------------------------
+
+    signal_text = get_value(
+        output,
+        "Signal"
+    )
+
+
+    try:
+
+        signal_percent = int(
+            signal_text.replace(
+                "%",
+                ""
+            )
+        )
+
+    except (AttributeError, ValueError):
+
+        signal_percent = None
+
+
+    # --------------------------------------------------------
+    # RSSI
+    # --------------------------------------------------------
+
+    rssi_text = get_value(
+        output,
+        "Rssi"
+    )
+
+
+    try:
+
+        rssi_dbm = float(
+            rssi_text
+        )
+
+    except (TypeError, ValueError):
+
+        rssi_dbm = None
+
+
+    # --------------------------------------------------------
+    # RSSI FALLBACK
+    #
+    # Some Windows versions do not provide RSSI directly.
+    # In that case estimate RSSI from Signal %.
+    # --------------------------------------------------------
+
+    if (
+        rssi_dbm is None
+        and signal_percent is not None
+    ):
+
+        rssi_dbm = round(
+            (signal_percent / 2) - 100,
+            1
+        )
+
+
+    # --------------------------------------------------------
+    # RECEIVE LINK RATE
+    # --------------------------------------------------------
+
+    rx_text = get_value(
+        output,
+        "Receive rate (Mbps)"
+    )
+
+
+    try:
+
+        rx_rate_mbps = float(
+            rx_text
+        )
+
+    except (TypeError, ValueError):
+
+        rx_rate_mbps = None
+
+
+    # --------------------------------------------------------
+    # TRANSMIT LINK RATE
+    # --------------------------------------------------------
+
+    tx_text = get_value(
+        output,
+        "Transmit rate (Mbps)"
+    )
+
+
+    try:
+
+        tx_rate_mbps = float(
+            tx_text
+        )
+
+    except (TypeError, ValueError):
+
+        tx_rate_mbps = None
+
+
+    # --------------------------------------------------------
+    # ESTIMATED SNR
+    # --------------------------------------------------------
+
+    if rssi_dbm is not None:
+
+        snr_db_est = round(
+            rssi_dbm
+            - ASSUMED_NOISE_FLOOR_DBM,
+            1
+        )
+
+    else:
+
+        snr_db_est = None
+
+
+    # --------------------------------------------------------
+    # ACTIVE BAND FALLBACK
+    #
+    # If Windows doesn't explicitly report the band,
+    # determine basic 2.4/5 GHz from the channel.
+    # --------------------------------------------------------
+
+    if (
+        active_band is None
+        and channel is not None
+    ):
+
+        if 1 <= channel <= 14:
+
+            active_band = "2.4 GHz"
+
+        elif channel >= 32:
+
+            active_band = "5 GHz"
+
+
+    return {
+
+        "ssid":
+            ssid,
+
+        "wifi_standard":
+            wifi_standard,
+
+        "active_band":
+            active_band,
+
+        "channel":
+            channel,
+
+        "signal_percent":
+            signal_percent,
+
+        "rssi_dbm":
+            rssi_dbm,
+
+        "snr_db_est":
+            snr_db_est,
+
+        "rx_rate_mbps":
+            rx_rate_mbps,
+
+        "tx_rate_mbps":
+            tx_rate_mbps
+    }
+
+
+# ============================================================
+# COLLECT LATENCY AND PACKET LOSS
+# ============================================================
+
+def collect_network_performance():
+
+    # --------------------------------------------------------
+    # FIND DEFAULT GATEWAY
+    # --------------------------------------------------------
+
+    ipconfig_output = run_command(
+        ["ipconfig"]
+    )
+
+
+    gateway_matches = re.findall(
+        r"Default Gateway[ .]*:\s*"
+        r"(\d{1,3}(?:\.\d{1,3}){3})",
+        ipconfig_output,
+        re.IGNORECASE
+    )
+
+
+    if not gateway_matches:
+
+        print(
+            "Could not find default gateway."
+        )
+
+        return {
+
+            "latency_ms":
+                None,
+
+            "packet_loss_pct":
+                None
+        }
+
+
+    gateway = gateway_matches[-1]
+
+
+    print(
+        "   Testing Wi-Fi gateway:",
+        gateway
+    )
+
+
+    # --------------------------------------------------------
+    # PING DEFAULT GATEWAY
+    #
+    # -n 5 = send 5 packets ONCE.
+    #
+    # This is NOT a 5-second refresh.
+    # --------------------------------------------------------
+
+    ping_output = run_command(
+        [
+            "ping",
+            "-n",
+            "5",
+            "-w",
+            "1000",
+            gateway
+        ]
+    )
+
+
+    # --------------------------------------------------------
+    # PACKET LOSS
+    #
+    # Windows normally returns:
+    #
+    # Lost = 0 (0% loss)
+    # --------------------------------------------------------
+
+    loss_match = re.search(
+        r"\((\d+)%\s*loss\)",
+        ping_output,
+        re.IGNORECASE
+    )
+
+
+    if loss_match:
+
+        packet_loss_pct = float(
+            loss_match.group(1)
+        )
+
+    else:
+
+        packet_loss_pct = None
+
+
+    # --------------------------------------------------------
+    # AVERAGE LATENCY
+    #
+    # Windows normally returns:
+    #
+    # Minimum = 2ms,
+    # Maximum = 5ms,
+    # Average = 3ms
+    # --------------------------------------------------------
+
+    latency_match = re.search(
+        r"Average\s*=\s*(\d+)ms",
+        ping_output,
+        re.IGNORECASE
+    )
+
+
+    if latency_match:
+
+        latency_ms = float(
+            latency_match.group(1)
+        )
+
+    else:
+
+        latency_ms = None
+
+
+    return {
+
+        "latency_ms":
+            latency_ms,
+
+        "packet_loss_pct":
+            packet_loss_pct
+    }
+
+
+# ============================================================
+# COLLECT COMPLETE DEVICE SNAPSHOT
+# ============================================================
+
+def collect_data():
+
+    print("\n======================================")
+    print("       WI-FI DATA COLLECTION")
+    print("======================================")
+
+
+    # --------------------------------------------------------
+    # STEP 1
+    # --------------------------------------------------------
+
+    print(
+        "\n1. Reading device capability..."
+    )
+
+    capability = (
+        collect_capability()
+    )
+
+
+    # --------------------------------------------------------
+    # STEP 2
+    # --------------------------------------------------------
+
+    print(
+        "2. Reading current Wi-Fi connection..."
+    )
+
+    current_wifi = (
+        collect_current_wifi()
+    )
+
+
+    # --------------------------------------------------------
+    # STEP 3
+    # --------------------------------------------------------
+
+    print(
+        "3. Measuring latency and packet loss..."
+    )
+
+    network_performance = (
+        collect_network_performance()
+    )
+
+
+    # --------------------------------------------------------
+    # COMBINE EVERYTHING
+    # --------------------------------------------------------
+
+    data = {
+
+        "device_name":
+            socket.gethostname(),
+
+        **capability,
+
+        **current_wifi,
+
+        **network_performance
+    }
+
+
+    return data
+
+
+# ============================================================
+# SEND ONE SNAPSHOT TO SERVER
+# ============================================================
+
+def send_to_server(data):
+
+    print(
+        "\n4. Sending snapshot to server..."
+    )
+
+
+    try:
+
+        response = requests.post(
+            SERVER_URL + "/telemetry",
+            json=data,
+            timeout=10
+        )
+
+
+        response.raise_for_status()
+
+
+        # ====================================================
+        # SUCCESS
+        # ====================================================
+
+        print("\n======================================")
+        print("       DATA SENT SUCCESSFULLY")
+        print("======================================")
+
+
+        # ----------------------------------------------------
+        # DEVICE
+        # ----------------------------------------------------
+
+        print("\nDEVICE")
+
+        print(
+            "Name:",
+            data["device_name"]
+        )
+
+        print(
+            "Adapter:",
+            data["adapter_name"]
+        )
+
+
+        # ----------------------------------------------------
+        # DEVICE CAPABILITY
+        # ----------------------------------------------------
+
+        print("\nDEVICE CAPABILITY")
+
+        print(
+            "Supported Radios:",
+            data["supported_radio_types"]
+        )
+
+        print(
+            "Supported Bands:",
+            data["supported_bands"]
+        )
+
+        print(
+            "Maximum Wi-Fi Standard:",
+            data["max_wifi_standard"]
+        )
+
+
+        # ----------------------------------------------------
+        # CURRENT CONNECTION
+        # ----------------------------------------------------
+
+        print("\nCURRENT CONNECTION")
+
+        print(
+            "SSID:",
+            data["ssid"]
+        )
+
+        print(
+            "Current Standard:",
+            data["wifi_standard"]
+        )
+
+        print(
+            "Active Band:",
+            data["active_band"]
+        )
+
+        print(
+            "Channel:",
+            data["channel"]
+        )
+
+
+        # ----------------------------------------------------
+        # SIGNAL
+        # ----------------------------------------------------
+
+        print("\nSIGNAL")
+
+        print(
+            "Signal:",
+            data["signal_percent"],
+            "%"
+        )
+
+        print(
+            "RSSI:",
+            data["rssi_dbm"],
+            "dBm"
+        )
+
+        print(
+            "Estimated SNR:",
+            data["snr_db_est"],
+            "dB"
+        )
+
+
+        # ----------------------------------------------------
+        # LINK RATE
+        # ----------------------------------------------------
+
+        print("\nLINK")
+
+        print(
+            "RX Rate:",
+            data["rx_rate_mbps"],
+            "Mbps"
+        )
+
+        print(
+            "TX Rate:",
+            data["tx_rate_mbps"],
+            "Mbps"
+        )
+
+
+        # ----------------------------------------------------
+        # NETWORK PERFORMANCE
+        # ----------------------------------------------------
+
+        print("\nNETWORK PERFORMANCE")
+
+        print(
+            "Latency:",
+            data["latency_ms"],
+            "ms"
+        )
+
+        print(
+            "Packet Loss:",
+            data["packet_loss_pct"],
+            "%"
+        )
+
+
+        # ----------------------------------------------------
+        # SERVER RESPONSE
+        # ----------------------------------------------------
+
+        print("\nSERVER RESPONSE")
+
+        print(
+            response.json()
+        )
+
+
+        print("\n======================================")
+        print("       SNAPSHOT COMPLETE")
+        print("======================================\n")
+
+
+    # ========================================================
+    # CONNECTION ERROR
+    # ========================================================
+
+    except requests.exceptions.ConnectionError:
+
+        print("\n======================================")
+        print("ERROR: SERVER CONNECTION FAILED")
+        print("======================================")
+
+        print(
+            "Could not connect to:"
+        )
+
+        print(
+            SERVER_URL
+        )
+
+        print(
+            "\nCheck that:"
+        )
+
+        print(
+            "1. Server laptop is running."
+        )
+
+        print(
+            "2. Uvicorn is running."
+        )
+
+        print(
+            "3. SERVER_URL contains the correct server IP."
+        )
+
+        print(
+            "4. Both laptops are on the same network."
+        )
+
+
+    # ========================================================
+    # TIMEOUT
+    # ========================================================
+
+    except requests.exceptions.Timeout:
+
+        print(
+            "\nERROR: Server connection timed out."
+        )
+
+
+    # ========================================================
+    # OTHER HTTP/REQUEST ERRORS
+    # ========================================================
+
+    except requests.exceptions.RequestException as error:
+
+        print(
+            "\nERROR sending data to server:"
+        )
+
+        print(
+            error
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    # Collect ONE snapshot
+    data = collect_data()
+
+    # Send ONE snapshot
+    send_to_server(data)
