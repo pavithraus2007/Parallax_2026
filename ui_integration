@@ -1,0 +1,12 @@
+node -v
+npm .cmd -v
+npm .cmd install 
+
+cd C:\Users\Pavithra\wifi_band_analyzer\server
+.\venv\Scripts\python.exe -m uvicorn server:app --host 0.0.0.0 --port 8000
+// uvicorn server:app --host 0.0.0.0 --port 8000
+npm.cmd run dev
+ctrl c
+
+click http link
+
