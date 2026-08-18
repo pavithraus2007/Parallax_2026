@@ -9,6 +9,6 @@ python -m pip install requests
 then  run 
 when client runs the code  the server should not kill the pgm(fastapi server)
 
-[11:37 pm, 17/08/2026] Pavithra Umashankar: python -m pip install requests
-[11:37 pm, 17/08/2026] Pavithra Umashankar: netsh wlan show interfaces
+python -m pip install requests
+netsh wlan show interfaces
 
